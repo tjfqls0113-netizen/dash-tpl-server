@@ -1,0 +1,180 @@
+require('dotenv').config();
+const express = require('express');
+const axios = require('axios');
+const cors = require('cors');
+const path = require('path');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static('public'));
+
+// ─────────────────────────────────────────
+// Confluence API 설정
+// ─────────────────────────────────────────
+const CONFLUENCE = {
+  baseUrl: process.env.CONFLUENCE_BASE_URL,
+  email:   process.env.CONFLUENCE_EMAIL,
+  token:   process.env.CONFLUENCE_API_TOKEN,
+  pageId:  process.env.CONFLUENCE_PAGE_ID,
+};
+
+const authHeader = Buffer.from(`${CONFLUENCE.email}:${CONFLUENCE.token}`)
+  .toString('base64');
+
+const confluenceAxios = axios.create({
+  baseURL: CONFLUENCE.baseUrl,
+  headers: {
+    'Authorization': `Basic ${authHeader}`,
+    'Content-Type':  'application/json',
+    'Accept':        'application/json',
+  },
+});
+
+// ─────────────────────────────────────────
+// 현재 페이지 내용 가져오기
+// ─────────────────────────────────────────
+async function getPageContent() {
+  const res = await confluenceAxios.get(
+    `/wiki/rest/api/content/${CONFLUENCE.pageId}?expand=body.storage,version`
+  );
+  return {
+    version: res.data.version.number,
+    title:   res.data.title,
+    body:    res.data.body.storage.value,
+  };
+}
+
+// ─────────────────────────────────────────
+// 새 행을 테이블에 추가하기
+// ─────────────────────────────────────────
+function addRowToTable(existingBody, rowData) {
+  const now = new Date();
+  const timeStr = now.toLocaleString('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+
+  // 상태별 색상
+  const statusColor = {
+    '출발': '#dcfce7',
+    '도착': '#dbeafe',
+    '귀환': '#fef9c3',
+  };
+  const bgColor = statusColor[rowData.status] || '#ffffff';
+
+  // 새 행 HTML
+  const newRow = `
+    <tr>
+      <td style="padding:8px 12px; border:1px solid #e2e8f0;">${timeStr}</td>
+      <td style="padding:8px 12px; border:1px solid #e2e8f0;">${rowData.name}</td>
+      <td style="padding:8px 12px; border:1px solid #e2e8f0;">${rowData.carNumber}</td>
+      <td style="padding:8px 12px; border:1px solid #e2e8f0; background:${bgColor};">
+        <strong>${rowData.status}</strong>
+      </td>
+      <td style="padding:8px 12px; border:1px solid #e2e8f0;">${rowData.memo || '-'}</td>
+    </tr>`;
+
+  // 기존 테이블이 있으면 행 추가, 없으면 테이블 새로 생성
+  if (existingBody.includes('<tbody>')) {
+    return existingBody.replace('</tbody>', newRow + '</tbody>');
+  } else {
+    // 테이블이 없으면 새로 생성
+    const newTable = `
+      <table style="width:100%; border-collapse:collapse; margin-top:16px;">
+        <thead>
+          <tr style="background:#f8fafc;">
+            <th style="padding:10px 12px; border:1px solid #e2e8f0; text-align:left;">시간</th>
+            <th style="padding:10px 12px; border:1px solid #e2e8f0; text-align:left;">기사명</th>
+            <th style="padding:10px 12px; border:1px solid #e2e8f0; text-align:left;">차량번호</th>
+            <th style="padding:10px 12px; border:1px solid #e2e8f0; text-align:left;">상태</th>
+            <th style="padding:10px 12px; border:1px solid #e2e8f0; text-align:left;">비고</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${newRow}
+        </tbody>
+      </table>`;
+    return existingBody + newTable;
+  }
+}
+
+// ─────────────────────────────────────────
+// Confluence 페이지 업데이트
+// ─────────────────────────────────────────
+async function updatePage(rowData) {
+  // 1. 현재 페이지 내용 가져오기
+  const page = await getPageContent();
+
+  // 2. 새 행 추가
+  const newBody = addRowToTable(page.body, rowData);
+
+  // 3. 업데이트 요청
+  await confluenceAxios.put(
+    `/wiki/rest/api/content/${CONFLUENCE.pageId}`,
+    {
+      version: { number: page.version + 1 },
+      title:   page.title,
+      type:    'page',
+      body: {
+        storage: {
+          value:          newBody,
+          representation: 'storage',
+        },
+      },
+    }
+  );
+}
+
+// ─────────────────────────────────────────
+// API 엔드포인트
+// ─────────────────────────────────────────
+
+// 출발/도착/귀환 기록
+app.post('/api/departure', async (req, res) => {
+  try {
+    const { name, carNumber, status, memo } = req.body;
+
+    // 유효성 검사
+    if (!name || !carNumber || !status) {
+      return res.status(400).json({
+        success: false,
+        message: '기사명, 차량번호, 상태는 필수입니다.',
+      });
+    }
+
+    // Confluence 업데이트
+    await updatePage({ name, carNumber, status, memo });
+
+    console.log(`✅ 기록 완료: ${name} | ${carNumber} | ${status}`);
+
+    res.json({
+      success: true,
+      message: `${status} 기록이 완료되었습니다!`,
+      data: { name, carNumber, status, time: new Date().toISOString() },
+    });
+
+  } catch (error) {
+    console.error('❌ 오류:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Confluence 업데이트 중 오류가 발생했습니다.',
+      error: error.message,
+    });
+  }
+});
+
+// 서버 상태 확인
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+// ─────────────────────────────────────────
+// 서버 시작
+// ─────────────────────────────────────────
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 서버 시작: http://localhost:${PORT}`);
+  console.log(`📄 Confluence 페이지 ID: ${CONFLUENCE.pageId}`);
+});
