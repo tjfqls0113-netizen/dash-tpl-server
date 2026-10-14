@@ -1,180 +1,173 @@
-require('dotenv').config();
-const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
-const path = require('path');
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>배송 기록 시스템</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #f0f4f8;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.card {
+  background: white;
+  border-radius: 20px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.12);
+  padding: 36px 32px;
+  width: 100%;
+  max-width: 420px;
+}
+.logo { text-align:center; margin-bottom:28px; }
+.logo-icon { font-size:48px; margin-bottom:8px; }
+.logo h1 { font-size:20px; font-weight:700; color:#1e293b; }
+.logo p  { font-size:13px; color:#94a3b8; margin-top:4px; }
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(express.static('public'));
+.field { margin-bottom:16px; }
+.field label {
+  display:block; font-size:12px; font-weight:600;
+  color:#64748b; margin-bottom:6px;
+  text-transform:uppercase; letter-spacing:0.5px;
+}
+.field input, .field select {
+  width:100%; padding:12px 14px;
+  border:1.5px solid #e2e8f0; border-radius:10px;
+  font-size:15px; color:#1e293b;
+  transition:border-color 0.2s;
+}
+.field input:focus {
+  outline:none; border-color:#2563eb;
+  box-shadow:0 0 0 3px #2563eb15;
+}
+.status-btns { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:16px; }
+.status-btn {
+  padding:12px 8px; border:2px solid #e2e8f0;
+  border-radius:10px; background:white;
+  font-size:14px; font-weight:600; cursor:pointer;
+  transition:all 0.15s; text-align:center;
+}
+.active-depart { border-color:#10b981; background:#f0fdf4; color:#166534; }
+.active-arrive { border-color:#2563eb; background:#eff6ff; color:#1e40af; }
+.active-return { border-color:#f59e0b; background:#fffbeb; color:#92400e; }
 
-// ─────────────────────────────────────────
-// Confluence API 설정
-// ─────────────────────────────────────────
-const CONFLUENCE = {
-  baseUrl: process.env.CONFLUENCE_BASE_URL,
-  email:   process.env.CONFLUENCE_EMAIL,
-  token:   process.env.CONFLUENCE_API_TOKEN,
-  pageId:  process.env.CONFLUENCE_PAGE_ID,
-};
+.submit-btn {
+  width:100%; padding:15px; border:none;
+  border-radius:12px; font-size:16px; font-weight:700;
+  cursor:pointer; transition:all 0.2s;
+  background:#2563eb; color:white;
+}
+.submit-btn:hover { background:#1d4ed8; transform:translateY(-1px); }
+.submit-btn:disabled { background:#94a3b8; cursor:not-allowed; transform:none; }
 
-const authHeader = Buffer.from(`${CONFLUENCE.email}:${CONFLUENCE.token}`)
-  .toString('base64');
+.result-box {
+  margin-top:16px; padding:14px 16px;
+  border-radius:10px; font-size:13px;
+  font-weight:500; text-align:center; display:none;
+}
+.result-success { background:#f0fdf4; color:#166534; border:1px solid #bbf7d0; }
+.result-error   { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
+.result-loading { background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <div class="logo-icon">🚚</div>
+    <h1>배송 기록 시스템</h1>
+    <p>출발 / 도착 / 귀환을 기록하세요</p>
+  </div>
 
-const confluenceAxios = axios.create({
-  baseURL: CONFLUENCE.baseUrl,
-  headers: {
-    'Authorization': `Basic ${authHeader}`,
-    'Content-Type':  'application/json',
-    'Accept':        'application/json',
-  },
-});
+  <div class="field">
+    <label>기사 이름</label>
+    <input type="text" id="name" placeholder="홍길동" />
+  </div>
+  <div class="field">
+    <label>차량 번호</label>
+    <input type="text" id="carNumber" placeholder="12가 3456" />
+  </div>
+  <div class="field">
+    <label>비고 (선택)</label>
+    <input type="text" id="memo" placeholder="특이사항 입력" />
+  </div>
 
-// ─────────────────────────────────────────
-// 현재 페이지 내용 가져오기
-// ─────────────────────────────────────────
-async function getPageContent() {
-  const res = await confluenceAxios.get(
-    `/wiki/rest/api/content/${CONFLUENCE.pageId}?expand=body.storage,version`
-  );
-  return {
-    version: res.data.version.number,
-    title:   res.data.title,
-    body:    res.data.body.storage.value,
-  };
+  <div style="font-size:12px;font-weight:600;color:#64748b;
+              text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">
+    상태 선택
+  </div>
+  <div class="status-btns">
+    <button class="status-btn" id="btn-출발" onclick="selectStatus('출발')">🟢 출발</button>
+    <button class="status-btn" id="btn-도착" onclick="selectStatus('도착')">🔵 도착</button>
+    <button class="status-btn" id="btn-귀환" onclick="selectStatus('귀환')">🟡 귀환</button>
+  </div>
+
+  <button class="submit-btn" id="submitBtn" onclick="submitRecord()">기록하기</button>
+  <div class="result-box" id="resultBox"></div>
+</div>
+
+<script>
+let selectedStatus = null;
+
+function selectStatus(status) {
+  selectedStatus = status;
+  document.querySelectorAll('.status-btn').forEach(b =>
+    b.classList.remove('active-depart','active-arrive','active-return'));
+  const map = { '출발':'active-depart','도착':'active-arrive','귀환':'active-return' };
+  document.getElementById('btn-'+status).classList.add(map[status]);
 }
 
-// ─────────────────────────────────────────
-// 새 행을 테이블에 추가하기
-// ─────────────────────────────────────────
-function addRowToTable(existingBody, rowData) {
-  const now = new Date();
-  const timeStr = now.toLocaleString('ko-KR', {
-    timeZone: 'Asia/Seoul',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  });
+async function submitRecord() {
+  const name      = document.getElementById('name').value.trim();
+  const carNumber = document.getElementById('carNumber').value.trim();
+  const memo      = document.getElementById('memo').value.trim();
+  const submitBtn = document.getElementById('submitBtn');
 
-  // 상태별 색상
-  const statusColor = {
-    '출발': '#dcfce7',
-    '도착': '#dbeafe',
-    '귀환': '#fef9c3',
-  };
-  const bgColor = statusColor[rowData.status] || '#ffffff';
+  if (!name)           { showResult('error','기사 이름을 입력해주세요.'); return; }
+  if (!carNumber)      { showResult('error','차량 번호를 입력해주세요.'); return; }
+  if (!selectedStatus) { showResult('error','상태를 선택해주세요.'); return; }
 
-  // 새 행 HTML
-  const newRow = `
-    <tr>
-      <td style="padding:8px 12px; border:1px solid #e2e8f0;">${timeStr}</td>
-      <td style="padding:8px 12px; border:1px solid #e2e8f0;">${rowData.name}</td>
-      <td style="padding:8px 12px; border:1px solid #e2e8f0;">${rowData.carNumber}</td>
-      <td style="padding:8px 12px; border:1px solid #e2e8f0; background:${bgColor};">
-        <strong>${rowData.status}</strong>
-      </td>
-      <td style="padding:8px 12px; border:1px solid #e2e8f0;">${rowData.memo || '-'}</td>
-    </tr>`;
+  submitBtn.disabled = true;
+  submitBtn.textContent = '전송 중...';
+  showResult('loading','⏳ Confluence에 기록 중입니다...');
 
-  // 기존 테이블이 있으면 행 추가, 없으면 테이블 새로 생성
-  if (existingBody.includes('<tbody>')) {
-    return existingBody.replace('</tbody>', newRow + '</tbody>');
-  } else {
-    // 테이블이 없으면 새로 생성
-    const newTable = `
-      <table style="width:100%; border-collapse:collapse; margin-top:16px;">
-        <thead>
-          <tr style="background:#f8fafc;">
-            <th style="padding:10px 12px; border:1px solid #e2e8f0; text-align:left;">시간</th>
-            <th style="padding:10px 12px; border:1px solid #e2e8f0; text-align:left;">기사명</th>
-            <th style="padding:10px 12px; border:1px solid #e2e8f0; text-align:left;">차량번호</th>
-            <th style="padding:10px 12px; border:1px solid #e2e8f0; text-align:left;">상태</th>
-            <th style="padding:10px 12px; border:1px solid #e2e8f0; text-align:left;">비고</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${newRow}
-        </tbody>
-      </table>`;
-    return existingBody + newTable;
-  }
-}
-
-// ─────────────────────────────────────────
-// Confluence 페이지 업데이트
-// ─────────────────────────────────────────
-async function updatePage(rowData) {
-  // 1. 현재 페이지 내용 가져오기
-  const page = await getPageContent();
-
-  // 2. 새 행 추가
-  const newBody = addRowToTable(page.body, rowData);
-
-  // 3. 업데이트 요청
-  await confluenceAxios.put(
-    `/wiki/rest/api/content/${CONFLUENCE.pageId}`,
-    {
-      version: { number: page.version + 1 },
-      title:   page.title,
-      type:    'page',
-      body: {
-        storage: {
-          value:          newBody,
-          representation: 'storage',
-        },
-      },
-    }
-  );
-}
-
-// ─────────────────────────────────────────
-// API 엔드포인트
-// ─────────────────────────────────────────
-
-// 출발/도착/귀환 기록
-app.post('/api/departure', async (req, res) => {
   try {
-    const { name, carNumber, status, memo } = req.body;
+    const res = await fetch('/api/departure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, carNumber, status: selectedStatus, memo })
+    });
+    const data = await res.json();
 
-    // 유효성 검사
-    if (!name || !carNumber || !status) {
-      return res.status(400).json({
-        success: false,
-        message: '기사명, 차량번호, 상태는 필수입니다.',
-      });
+    if (data.success) {
+      showResult('success', `✅ ${name} 기사님의 [${selectedStatus}] 기록 완료!`);
+      // 폼 초기화
+      document.getElementById('name').value = '';
+      document.getElementById('carNumber').value = '';
+      document.getElementById('memo').value = '';
+      selectedStatus = null;
+      document.querySelectorAll('.status-btn').forEach(b =>
+        b.classList.remove('active-depart','active-arrive','active-return'));
+    } else {
+      showResult('error', '❌ 오류: ' + data.message);
     }
-
-    // Confluence 업데이트
-    await updatePage({ name, carNumber, status, memo });
-
-    console.log(`✅ 기록 완료: ${name} | ${carNumber} | ${status}`);
-
-    res.json({
-      success: true,
-      message: `${status} 기록이 완료되었습니다!`,
-      data: { name, carNumber, status, time: new Date().toISOString() },
-    });
-
-  } catch (error) {
-    console.error('❌ 오류:', error.response?.data || error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Confluence 업데이트 중 오류가 발생했습니다.',
-      error: error.message,
-    });
+  } catch(e) {
+    showResult('error', '❌ 서버 연결 실패: ' + e.message);
   }
-});
 
-// 서버 상태 확인
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
-});
+  submitBtn.disabled = false;
+  submitBtn.textContent = '기록하기';
+}
 
-// ─────────────────────────────────────────
-// 서버 시작
-// ─────────────────────────────────────────
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 서버 시작: http://localhost:${PORT}`);
-  console.log(`📄 Confluence 페이지 ID: ${CONFLUENCE.pageId}`);
-});
+function showResult(type, msg) {
+  const box = document.getElementById('resultBox');
+  box.className = 'result-box result-' + type;
+  box.textContent = msg;
+  box.style.display = 'block';
+}
+</script>
+</body>
+</html>
